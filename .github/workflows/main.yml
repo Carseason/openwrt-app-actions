@@ -1,0 +1,232 @@
+name: Build IPKs
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      applications:
+        description: 'build applications, eg: "luci-app-store luci-app-ddnsto". "all" means build all'
+        required: true
+        default: 'all'
+      target:
+        description: 'build target ["arm64", "x64", "mipsel", "all"]'
+        required: true
+        default: 'all'
+
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Detect build target
+        id: set-matrix
+        env:
+          MATRIX_TARGET: ${{ github.event.inputs.target }}
+        run: |
+          if [ "x${MATRIX_TARGET}" = "x" -o "x${MATRIX_TARGET}" = "xall" ]; then \
+            echo "matrix={\"target\":[\"arm64\", \"x64\", \"mipsel\"]}" >> $GITHUB_OUTPUT; \
+          else \
+            targets=""; \
+            for target in ${MATRIX_TARGET}; do \
+              targets="$targets, \"$target\"";
+            done; \
+            echo "matrix={\"target\":[${targets#, }]}" >> $GITHUB_OUTPUT; \
+          fi
+  build:
+    needs: matrix
+    runs-on: ubuntu-latest
+    name: Build IPKs for ${{ matrix.target }}
+    strategy:
+      matrix: ${{fromJson(needs.matrix.outputs.matrix)}}
+    steps:
+      - name: Job Info
+        run: |
+          apps="${{ github.event.inputs.applications }}"
+          echo "::notice title=Apps::$apps"
+
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          path: 'apps'
+
+      - name: Import Env
+        env:
+          MATRIX_TARGET: ${{ matrix.target }}
+        run: cat apps/.github/workflows/${MATRIX_TARGET}.env >> "$GITHUB_ENV"
+
+      - name: Initialization environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo swapoff -a || true
+          sudo rm -rf /swapfile /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch unzip zlib1g-dev libc6-dev-i386 subversion flex uglifyjs gcc-multilib g++-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler antlr3 gperf rsync
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          sudo timedatectl set-timezone "$TZ"
+          # curl -fsSL https://raw.githubusercontent.com/P3TERX/dotfiles/master/.bashrc >> ~/.bashrc
+
+      - name: Download SDK
+        run: wget ${SDK_URL}${SDK_NAME}.tar.xz
+
+      - name: Unpack SDK
+        run: |
+          mkdir ~/openwrt-sdk
+          tar -xJf `pwd`/${SDK_NAME}.tar.xz --strip-components=1 -C ~/openwrt-sdk
+          ln -s ${HOME}/openwrt-sdk ${SDK_NAME}
+
+      - name: Clean Code
+        run: |
+          rm -f ${SDK_NAME}/package/linux/modules/*
+          rm -f ${SDK_NAME}/package/kernel/linux/modules/*
+          grep -lFr '$(call KernelPackage,' ${SDK_NAME}/package/linux | xargs -rn1 sed -i 's/ FILES:=/ XFILES:=/g' || true
+          grep -lFr '$(call KernelPackage,' ${SDK_NAME}/package/kernel | xargs -rn1 sed -i 's/ FILES:=/ XFILES:=/g' || true
+          find ${SDK_NAME}/target/linux -name 'modules.mk' | xargs -rn1 sed -i 's/ FILES:=/ XFILES:=/g' || true
+          grep 'src-git base ' ${SDK_NAME}/feeds.conf.default > ${SDK_NAME}/feeds.conf
+          grep 'src-git luci ' ${SDK_NAME}/feeds.conf.default >> ${SDK_NAME}/feeds.conf
+
+      - name: Write Config
+        run: |
+          cat <<EOF >${SDK_NAME}/.config
+          # CONFIG_SIGNED_PACKAGES is not set
+          CONFIG_LUCI_LANG_zh_Hans=y
+          CONFIG_LUCI_LANG_zh-cn=y
+          EOF
+
+      - name: Load custom feeds
+        run: |
+          echo "" >> ${SDK_NAME}/feeds.conf
+          echo "src-link apps `pwd`/apps/applications" >> ${SDK_NAME}/feeds.conf
+          cat apps/feeds.conf >> ${SDK_NAME}/feeds.conf
+          echo "" >> ${SDK_NAME}/feeds.conf
+          echo "Final feeds.conf:"
+          cat ${SDK_NAME}/feeds.conf
+
+      - name: 'Restore feeds from cache'
+        id: feeds-cache
+        uses: actions/cache@v3
+        env:
+          CACHE_NAME: 'feeds-cache'
+        with:
+          path: |
+            ~/openwrt-sdk/feeds/packages
+            ~/openwrt-sdk/feeds/luci
+          key: ${{ env.CACHE_NAME }}-${{ env.SDK_NAME }}-pl-3
+
+      - name: 'Restore staging from cache'
+        id: staging-cache
+        uses: actions/cache@v3
+        env:
+          CACHE_NAME: 'staging-cache'
+        with:
+          path: ~/openwrt-sdk/staging_dir
+          key: ${{ env.CACHE_NAME }}-${{ env.SDK_NAME }}-hht-2
+
+      - name: Update feeds
+        run: |
+          apps="${{ github.event.inputs.applications }}"
+          cd ~/openwrt-sdk
+          ./scripts/feeds update -a
+          grep -lFr '$(call KernelPackage,' feeds/base/package/linux | xargs -rn1 sed -i 's/ FILES:=/ XFILES:=/g' || true
+          grep -lFr '$(call KernelPackage,' feeds/base/package/kernel | xargs -rn1 sed -i 's/ FILES:=/ XFILES:=/g' || true
+          patch -d feeds/luci -p1 -f -N -i ${{ github.workspace }}/apps/.github/workflows/luci.patch
+          if [ "$apps" = "all" ]; then
+            ./scripts/feeds install -a -p apps -d y
+            for repo in `sed -e 's/src-[^ ]* \([^ ]*\) .*/\1/g' ${{ github.workspace }}/apps/feeds.conf`
+            do
+              echo add all in repo $repo
+              ./scripts/feeds install -a -p $repo -d y
+            done
+          else
+            ./scripts/feeds install -d y ${apps}
+          fi
+
+      - name: Defconfig
+        id: defconfig
+        run: |
+          cd ~/openwrt-sdk
+          make defconfig
+          sed -i 's/^CONFIG_PACKAGE_\(.*\)=m$/# CONFIG_PACKAGE_\1 is not set/' .config
+          grep '^CONFIG_PACKAGE_' .config
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: 'Restore downloads from cache'
+        id: dl-cache
+        uses: actions/cache@v3
+        env:
+          CACHE_NAME: 'dl-cache'
+        with:
+          path: ${{ github.workspace }}/.dl
+          key: ${{ env.CACHE_NAME }}
+
+      - name: Download sources
+        id: download
+        if: steps.defconfig.outputs.status == 'success'
+        run: |
+          [ -d "${{ github.workspace }}/.dl" ] || mkdir -p "${{ github.workspace }}/.dl"
+          cd ~/openwrt-sdk
+          rm -rf dl
+          ln -s "${{ github.workspace }}/.dl" dl
+          make -j4 download
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: ReDownload
+        if: failure() && steps.defconfig.outputs.status == 'success'
+        run: |
+          cd ~/openwrt-sdk
+          make -j1 V=s download
+
+      - name: 'Restore ccache from cache'
+        id: ccache-cache
+        uses: actions/cache@v3
+        env:
+          CACHE_NAME: 'ccache-cache'
+        with:
+          path: ~/openwrt-sdk/.ccache
+          key: ${{ env.CACHE_NAME }}-${{ env.SDK_NAME }}-2
+
+      - name: PreCompile IPKs
+        id: precompile
+        if: steps.download.outputs.status == 'success'
+        run: |
+          cd ~/openwrt-sdk
+          make -j4 package/compile
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: ReCompile IPKs
+        id: compile
+        if: failure() && steps.download.outputs.status == 'success'
+        run: |
+          cd ~/openwrt-sdk
+          bash -c 'set -o pipefail ; make -j1 V=s defconfig package/compile 2>&1 | tee /tmp/openwrt-sdk-build.log'
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Last fail log
+        if: failure() && steps.download.outputs.status == 'success'
+        run: tail -n 200 /tmp/openwrt-sdk-build.log && false
+
+      - name: PreUpload - Clean
+        id: preupload
+        if: steps.precompile.outputs.status == 'success' || steps.compile.outputs.status == 'success'
+        run: |
+          cd ${SDK_NAME}/bin/packages/${SDK_ARCH}
+          rm -rf base luci
+
+      - name: Upload bin directory
+        uses: actions/upload-artifact@main
+        if: steps.precompile.outputs.status == 'success' || steps.compile.outputs.status == 'success'
+        with:
+          name: ${{ env.SDK_ARCH }}
+          path: ${{ env.SDK_NAME }}/bin/packages/${{ env.SDK_ARCH }}
+
+      - name: PreCache - Clean
+        run: |
+          git -C "${SDK_NAME}/feeds/luci" reset --hard HEAD^
+          cd ${SDK_NAME}/staging_dir
+          rm -rf packages target-*

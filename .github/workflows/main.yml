@@ -1,5 +1,5 @@
 name: Build IPKs
-run-name: Build Ipk ${{ inputs.applications }
+run-name: Build Ipk ${{ inputs.applications }}
 on:
   repository_dispatch:
   workflow_dispatch:

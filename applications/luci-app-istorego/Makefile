@@ -6,7 +6,7 @@
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=LuCI support for istorego 
-# LUCI_DEPENDS:=+istorego
+LUCI_DEPENDS:=+istorego
 LUCI_PKGARCH:=all
 
 PKG_VERSION:=0.0.2

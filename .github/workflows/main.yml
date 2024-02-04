@@ -1,5 +1,5 @@
 name: Build IPKs
-
+run-name: Build Ipk ${{ inputs.applications }}
 on:
   repository_dispatch:
   workflow_dispatch:
@@ -7,12 +7,11 @@ on:
       applications:
         description: 'build applications, eg: "luci-app-store luci-app-ddnsto". "all" means build all'
         required: true
-        default: 'all'
+        default: "all"
       target:
         description: 'build target ["arm64", "x64", "mipsel", "all"]'
         required: true
-        default: 'all'
-
+        default: "all"
 
 env:
   TZ: Asia/Shanghai
@@ -52,7 +51,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v2
         with:
-          path: 'apps'
+          path: "apps"
 
       - name: Import Env
         env:
@@ -108,22 +107,22 @@ jobs:
           echo "Final feeds.conf:"
           cat ${SDK_NAME}/feeds.conf
 
-      - name: 'Restore feeds from cache'
+      - name: "Restore feeds from cache"
         id: feeds-cache
         uses: actions/cache@v3
         env:
-          CACHE_NAME: 'feeds-cache'
+          CACHE_NAME: "feeds-cache"
         with:
           path: |
             ~/openwrt-sdk/feeds/packages
             ~/openwrt-sdk/feeds/luci
           key: ${{ env.CACHE_NAME }}-${{ env.SDK_NAME }}-pl-3
 
-      - name: 'Restore staging from cache'
+      - name: "Restore staging from cache"
         id: staging-cache
         uses: actions/cache@v3
         env:
-          CACHE_NAME: 'staging-cache'
+          CACHE_NAME: "staging-cache"
         with:
           path: ~/openwrt-sdk/staging_dir
           key: ${{ env.CACHE_NAME }}-${{ env.SDK_NAME }}-hht-2
@@ -156,11 +155,11 @@ jobs:
           grep '^CONFIG_PACKAGE_' .config
           echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: 'Restore downloads from cache'
+      - name: "Restore downloads from cache"
         id: dl-cache
         uses: actions/cache@v3
         env:
-          CACHE_NAME: 'dl-cache'
+          CACHE_NAME: "dl-cache"
         with:
           path: ${{ github.workspace }}/.dl
           key: ${{ env.CACHE_NAME }}
@@ -182,11 +181,11 @@ jobs:
           cd ~/openwrt-sdk
           make -j1 V=s download
 
-      - name: 'Restore ccache from cache'
+      - name: "Restore ccache from cache"
         id: ccache-cache
         uses: actions/cache@v3
         env:
-          CACHE_NAME: 'ccache-cache'
+          CACHE_NAME: "ccache-cache"
         with:
           path: ~/openwrt-sdk/.ccache
           key: ${{ env.CACHE_NAME }}-${{ env.SDK_NAME }}-2

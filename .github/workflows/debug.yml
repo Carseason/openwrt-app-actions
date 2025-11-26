@@ -6,7 +6,7 @@ on:
       target:
         description: 'target ["arm64", "x64", "mipsel"]'
         required: true
-        default: 'arm64'
+        default: "arm64"
         type: choice
         options:
           - arm64
@@ -24,7 +24,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v2
         with:
-          path: 'apps'
+          path: "apps"
 
       - name: Import Env
         env:

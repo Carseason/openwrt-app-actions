@@ -1,4 +1,4 @@
-name: Build IPKs
+name: Build APKs
 run-name: Build Ipk ${{ inputs.applications }}
 
 on:

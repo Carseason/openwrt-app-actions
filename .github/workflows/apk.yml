@@ -1,0 +1,368 @@
+name: Build IPKs
+run-name: Build Ipk ${{ inputs.applications }}
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      applications:
+        description: 'build applications, eg: "luci-app-store luci-app-ddnsto". "all" means build all'
+        required: true
+        default: "all"
+      target:
+        description: 'build target ["arm64", "x64", "mipsel", "arm", "all"]'
+        required: true
+        default: "all"
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Detect build target
+        id: set-matrix
+        env:
+          MATRIX_TARGET: ${{ github.event.inputs.target }}
+        run: |
+          if [ "x${MATRIX_TARGET}" = "x" -o "x${MATRIX_TARGET}" = "xall" ]; then \
+            echo "matrix={\"target\":[\"arm64\", \"x64\", \"mipsel\", \"arm\"]}" >> $GITHUB_OUTPUT; \
+          else \
+            targets=""; \
+            for target in ${MATRIX_TARGET}; do \
+              targets="$targets, \"$target\"";
+            done; \
+            echo "matrix={\"target\":[${targets#, }]}" >> $GITHUB_OUTPUT; \
+          fi
+  build:
+    needs: matrix
+    runs-on: ubuntu-latest
+    name: Build IPKs for ${{ matrix.target }}
+    strategy:
+      matrix: ${{fromJson(needs.matrix.outputs.matrix)}}
+    steps:
+      - name: Job Info
+        run: |
+          apps="${{ github.event.inputs.applications }}"
+          echo "::notice title=Apps::$apps"
+
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          path: "apps"
+
+      - name: Import Env
+        env:
+          MATRIX_TARGET: ${{ matrix.target }}
+        run: cat apps/.github/workflows/${MATRIX_TARGET}.env >> "$GITHUB_ENV"
+
+      - name: Initialization environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo swapoff -a || true
+          sudo rm -rf /swapfile /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo find /etc/apt/sources.list.d ! -name 'ubuntu.sources' -type f -exec rm -f {} +
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch unzip zlib1g-dev libc6-dev-i386 subversion flex uglifyjs gcc-multilib g++-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler antlr3 gperf rsync
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          sudo ln -s /usr/bin/python3 /usr/bin/python3.10 || true
+          sudo timedatectl set-timezone "$TZ"
+          # curl -fsSL https://raw.githubusercontent.com/P3TERX/dotfiles/master/.bashrc >> ~/.bashrc
+
+      - name: Download SDK
+        run: wget ${SDK_URL}${SDK_NAME}.tar.xz && wget ${SDK_URL_APK}${SDK_NAME_APK}.tar.zst
+
+      - name: Unpack SDK
+        run: |
+          mkdir ~/openwrt-sdk ~/openwrt-sdk-apk
+          tar -xJf `pwd`/${SDK_NAME}.tar.xz --strip-components=1 -C ~/openwrt-sdk
+          tar --zstd -xf `pwd`/${SDK_NAME_APK}.tar.zst --strip-components=1 -C ~/openwrt-sdk-apk
+          ln -s ${HOME}/openwrt-sdk ${SDK_NAME}
+          ln -s ${HOME}/openwrt-sdk-apk ${SDK_NAME_APK}
+
+      - name: Clean Code
+        run: |
+          rm -f ${SDK_NAME}/package/linux/modules/* ${SDK_NAME_APK}/package/linux/modules/*
+          rm -f ${SDK_NAME}/package/kernel/linux/modules/* ${SDK_NAME_APK}/package/kernel/linux/modules/*
+          grep -lFr '$(call KernelPackage,' ${SDK_NAME}/package/linux ${SDK_NAME_APK}/package/linux | xargs -rn1 sed -i 's/ FILES:=/ XFILES:=/g' || true
+          grep -lFr '$(call KernelPackage,' ${SDK_NAME}/package/kernel ${SDK_NAME_APK}/package/kernel | xargs -rn1 sed -i 's/ FILES:=/ XFILES:=/g' || true
+          find ${SDK_NAME}/target/linux -name 'modules.mk' | xargs -rn1 sed -i 's/ FILES:=/ XFILES:=/g' || true
+          find ${SDK_NAME_APK}/target/linux -name 'modules.mk' | xargs -rn1 sed -i 's/ FILES:=/ XFILES:=/g' || true
+          patch -d ${SDK_NAME_APK} -p1 -f -N -i ${{ github.workspace }}/apps/.github/workflows/ignore-ko-deps.patch
+          grep 'src-git base ' ${SDK_NAME}/feeds.conf.default > ${SDK_NAME}/feeds.conf
+          grep 'src-git luci ' ${SDK_NAME}/feeds.conf.default >> ${SDK_NAME}/feeds.conf
+          grep 'src-git --root=package base ' ${SDK_NAME_APK}/feeds.conf.default > ${SDK_NAME_APK}/feeds.conf
+          grep 'src-git luci ' ${SDK_NAME_APK}/feeds.conf.default >> ${SDK_NAME_APK}/feeds.conf
+
+      - name: Write Config
+        run: |
+          cat <<EOF >${SDK_NAME}/.config
+          CONFIG_CCACHE=y
+          # CONFIG_SIGNED_PACKAGES is not set
+          CONFIG_LUCI_LANG_zh_Hans=y
+          CONFIG_LUCI_LANG_zh-cn=y
+          EOF
+          cp ${SDK_NAME}/.config ${SDK_NAME_APK}/.config
+
+      - name: Load custom feeds
+        run: |
+          echo "" > common-feeds.conf
+          echo "src-link apps `pwd`/apps/applications" >> common-feeds.conf
+          cat apps/feeds.conf >> common-feeds.conf
+          echo "" >> common-feeds.conf
+          cat common-feeds.conf >> ${SDK_NAME}/feeds.conf
+          cat common-feeds.conf >> ${SDK_NAME_APK}/feeds.conf
+          echo "======= Final IPK feeds.conf:"
+          cat ${SDK_NAME}/feeds.conf
+          echo "======= Final APK feeds.conf:"
+          cat ${SDK_NAME_APK}/feeds.conf
+
+      - name: "Restore ipk feeds from cache"
+        id: feeds-cache
+        uses: actions/cache@v3
+        env:
+          CACHE_NAME: "feeds-cache"
+        with:
+          path: |
+            ~/openwrt-sdk/feeds/packages
+            ~/openwrt-sdk/feeds/luci
+          key: ${{ env.CACHE_NAME }}-${{ env.SDK_NAME }}-pl-3
+
+      - name: "Restore apk feeds from cache"
+        id: feeds-cache-apk
+        uses: actions/cache@v3
+        env:
+          CACHE_NAME: "feeds-cache-apk"
+        with:
+          path: |
+            ~/openwrt-sdk-apk/feeds/base
+            ~/openwrt-sdk-apk/feeds/base_root
+            ~/openwrt-sdk-apk/feeds/luci
+          key: ${{ env.CACHE_NAME }}-${{ env.SDK_NAME_APK }}-bl-2
+
+      - name: "Restore ipk staging from cache"
+        id: staging-cache
+        uses: actions/cache@v3
+        env:
+          CACHE_NAME: "staging-cache"
+        with:
+          path: ~/openwrt-sdk/staging_dir
+          key: ${{ env.CACHE_NAME }}-${{ env.SDK_NAME }}-hht-2
+
+      - name: "Restore apk staging from cache"
+        id: staging-cache-apk
+        uses: actions/cache@v3
+        env:
+          CACHE_NAME: "staging-cache-apk"
+        with:
+          path: ~/openwrt-sdk-apk/staging_dir
+          key: ${{ env.CACHE_NAME }}-${{ env.SDK_NAME_APK }}-hht-2
+
+      - name: Update feeds
+        run: |
+          apps="${{ github.event.inputs.applications }}"
+          ( cd ~/openwrt-sdk && ./scripts/feeds update -a )
+          ( cd ~/openwrt-sdk-apk && ./scripts/feeds update -a )
+          grep -lFr '$(call KernelPackage,' ~/openwrt-sdk/feeds/base/package/linux | xargs -rn1 sed -i 's/ FILES:=/ XFILES:=/g' || true
+          grep -lFr '$(call KernelPackage,' ~/openwrt-sdk/feeds/base/package/kernel | xargs -rn1 sed -i 's/ FILES:=/ XFILES:=/g' || true
+          patch -d ~/openwrt-sdk/feeds/luci -p1 -f -N -i ${{ github.workspace }}/apps/.github/workflows/luci.patch
+          grep -lFr '$(call KernelPackage,' ~/openwrt-sdk-apk/feeds/base_root/package/kernel ~/openwrt-sdk-apk/feeds/base_root/target/linux | xargs -rn1 sed -i 's/ FILES:=/ XFILES:=/g' || true
+          patch -d ~/openwrt-sdk-apk/feeds/luci -p1 -f -N -i ${{ github.workspace }}/apps/.github/workflows/luci-25.patch
+          for sdk in ~/openwrt-sdk ~/openwrt-sdk-apk; do
+            echo "### Install feeds for SDK $sdk, apps: $apps ###"
+            cd $sdk
+            if [ "$apps" = "all" ]; then
+              ./scripts/feeds install -a -p apps -d y
+              for repo in `sed -e 's/src-[^ ]* \([^ ]*\) .*/\1/g' ${{ github.workspace }}/apps/feeds.conf`
+              do
+                echo add all in repo $repo
+                ./scripts/feeds install -a -p $repo -d y
+              done
+            else
+              ./scripts/feeds install -d y ${apps}
+            fi
+          done
+
+      - name: Defconfig
+        id: defconfig
+        run: |
+          for sdk in ~/openwrt-sdk ~/openwrt-sdk-apk; do
+            echo "### Defconfig for SDK $sdk ###"
+            cd $sdk
+            make defconfig
+            sed -i 's/^CONFIG_PACKAGE_\(.*\)=m$/# CONFIG_PACKAGE_\1 is not set/' .config
+            grep '^CONFIG_PACKAGE_' .config
+          done
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: "Restore downloads from cache"
+        id: dl-cache
+        uses: actions/cache@v3
+        env:
+          CACHE_NAME: "dl-cache"
+        with:
+          path: ${{ github.workspace }}/.dl
+          key: ${{ env.CACHE_NAME }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ env.CACHE_NAME }}-${{ github.ref_name }}-
+          enableCrossOsArchive: true
+
+      - name: Download sources
+        id: download
+        if: steps.defconfig.outputs.status == 'success'
+        run: |
+          [ -d "${{ github.workspace }}/.dl" ] || mkdir -p "${{ github.workspace }}/.dl"
+          for sdk in ~/openwrt-sdk ~/openwrt-sdk-apk; do
+            echo "### Download for SDK $sdk ###"
+            cd $sdk
+            rm -rf dl
+            ln -s "${{ github.workspace }}/.dl" dl
+            make -j4 download
+          done
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: ReDownload
+        if: failure() && steps.defconfig.outputs.status == 'success'
+        run: |
+          set -euxo pipefail
+          for sdk in ~/openwrt-sdk ~/openwrt-sdk-apk; do
+            cd $sdk
+            make -j1 V=s download 2>&1 | tee /tmp/openwrt-download.log
+          done
+
+      - name: Diagnose hash mismatch in downloads
+        if: failure() && steps.defconfig.outputs.status == 'success'
+        run: |
+          set -euxo pipefail
+          log=/tmp/openwrt-download.log
+
+          echo "==== Last 200 lines of download log ===="
+          tail -n 200 "$log" || true
+
+          # 1) 抓取最后一条 hash mismatch 信息
+          line="$(grep -E 'Hash of the local file .* does not match' "$log" | tail -n 1 || true)"
+          echo "==== Mismatch line ===="
+          echo "$line" || true
+
+          # 2) 从 mismatch 行里解析：本地文件路径、算出来的 hash、期望 hash
+          file_path="$(echo "$line" | sed -n 's/.*Hash of the local file \([^ ]*\) does not match.*/\1/p')"
+          local_hash="$(echo "$line" | sed -n 's/.*file: \([0-9a-f]\{64\}\), requested.*/\1/p')"
+          req_hash="$(echo "$line" | sed -n 's/.*requested: \([0-9a-f]\{64\}\).*/\1/p')"
+
+          echo "file_path=${file_path:-<empty>}"
+          echo "local_hash=${local_hash:-<empty>}"
+          echo "req_hash=${req_hash:-<empty>}"
+
+          # 3) 从日志中找对应的 download.pl 命令行（里面带 URL base）
+          fn="$(basename "${file_path:-unknown}")"
+          cmd="$(grep -F 'scripts/download.pl' "$log" | grep -F "\"$fn\"" | tail -n 1 || true)"
+          echo "==== download.pl cmd ===="
+          echo "$cmd" || true
+
+          url_base="$(echo "$cmd" | sed -n 's/.*"\(https:\/\/[^"]*\/\)".*/\1/p')"
+          echo "url_base=${url_base:-<empty>}"
+          echo "url=${url_base}${fn}"
+
+          # 4) 打印 dl 目录现状（很多时候文件已被删除，但目录里可能残留部分文件）
+          echo "==== dl dir listing ===="
+          if [ -n "${file_path:-}" ]; then
+            ls -lah "$(dirname "$file_path")" || true
+          else
+            ls -lah ~/openwrt-sdk/dl || true
+          fi
+
+          # 5) 直接用 curl 重新下载一份到 /tmp，并输出 HTTP 头、文件类型、大小、sha256
+          if [ -n "${url_base:-}" ] && [ -n "${fn:-}" ]; then
+            rm -f "/tmp/$fn" /tmp/dl.headers || true
+            curl -fL --retry 5 --retry-connrefused --retry-delay 2 \
+              -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+              -D /tmp/dl.headers -o "/tmp/$fn" "${url_base}${fn}" || true
+
+            echo "==== HTTP headers ===="
+            cat /tmp/dl.headers || true
+
+            echo "==== downloaded file info ===="
+            ls -lh "/tmp/$fn" || true
+            file "/tmp/$fn" || true
+            sha256sum "/tmp/$fn" || true
+
+            # tar.gz 额外做个完整性检查
+            if echo "$fn" | grep -qE '\.tar\.gz$'; then
+              gzip -t "/tmp/$fn" && echo "gzip OK" || echo "gzip BAD"
+            fi
+          fi
+
+          # 让 step 明确失败，便于你在 Actions UI 里一眼看到诊断输出
+          false
+
+      - name: "Restore ipk ccache from cache"
+        id: ccache-cache
+        uses: actions/cache@v3
+        env:
+          CACHE_NAME: "ccache-cache"
+        with:
+          path: ~/openwrt-sdk/.ccache
+          key: ${{ env.CACHE_NAME }}-${{ env.SDK_NAME }}-2
+
+      - name: "Restore apk ccache from cache"
+        id: ccache-cache-apk
+        uses: actions/cache@v3
+        env:
+          CACHE_NAME: "ccache-cache-apk"
+        with:
+          path: ~/openwrt-sdk-apk/.ccache
+          key: ${{ env.CACHE_NAME }}-${{ env.SDK_NAME_APK }}-2
+
+      - name: PreCompile IPKs
+        id: precompile
+        if: steps.download.outputs.status == 'success'
+        run: |
+          for sdk in ~/openwrt-sdk ~/openwrt-sdk-apk; do
+            time make -C $sdk -j4 package/compile
+          done
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: ReCompile IPKs
+        id: compile
+        if: failure() && steps.download.outputs.status == 'success'
+        run: |
+          for sdk in ~/openwrt-sdk ~/openwrt-sdk-apk; do
+            cd $sdk
+            bash -c 'set -o pipefail ; make -j1 V=s defconfig package/compile 2>&1 | tee /tmp/openwrt-sdk-build.log'
+          done
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Last fail log
+        if: failure() && steps.download.outputs.status == 'success'
+        run: tail -n 200 /tmp/openwrt-sdk-build.log && false
+
+      - name: PreUpload - Clean
+        id: preupload
+        if: steps.precompile.outputs.status == 'success' || steps.compile.outputs.status == 'success'
+        run: |
+          ( cd ${SDK_NAME}/bin/packages/${SDK_ARCH} && rm -rf base luci )
+          ( cd ${SDK_NAME_APK}/bin/packages/${SDK_ARCH_APK} && rm -rf base luci )
+          mkdir ~/upload
+          cp -a ${SDK_NAME}/bin/packages/${SDK_ARCH} ~/upload/ipk
+          cp -a ${SDK_NAME_APK}/bin/packages/${SDK_ARCH_APK} ~/upload/apk
+
+      - name: Upload bin directory
+        uses: actions/upload-artifact@main
+        if: steps.precompile.outputs.status == 'success' || steps.compile.outputs.status == 'success'
+        with:
+          name: ${{ matrix.target }}
+          path: ~/upload
+
+      - name: PreCache - Clean
+        run: |
+          for sdk in ~/openwrt-sdk ~/openwrt-sdk-apk; do
+            cd $sdk
+            git -C "feeds/luci" reset --hard HEAD
+            cd staging_dir
+            rm -rf packages target-*
+          done

@@ -41,5 +41,22 @@ index aca52e08cd..b28284c892 100644
  		exit 0
  	}
    endef
--- 
-2.46.0
++
++diff --git a/modules/luci-base/src/contrib/lemon.c b/modules/luci-base/src/contrib/lemon.c
++--- a/modules/luci-base/src/contrib/lemon.c
+++++ b/modules/luci-base/src/contrib/lemon.c
++@@ -163,6 +163,6 @@
++-void FindRulePrecedences();
++-void FindFirstSets();
++-void FindStates();
++-void FindLinks();
++-void FindFollowSets();
++-void FindActions();
+++void FindRulePrecedences(struct lemon *);
+++void FindFirstSets(struct lemon *);
+++void FindStates(struct lemon *);
+++void FindLinks(struct lemon *);
+++void FindFollowSets(struct lemon *);
+++void FindActions(struct lemon *);
+ -- 
+ 2.46.0

@@ -12,9 +12,9 @@ index aca52e08cd..b28284c892 100644
 --- a/luci.mk
 +++ b/luci.mk
 @@ -53,6 +53,8 @@ LUCI_LANG.uk=Українська (Ukrainian)
- LUCI_LANG.vi=Vietnamese)
+ LUCI_LANG.vi=Vietnamese (Vietnamese)
  LUCI_LANG.zh_Hans=简体中文 (Chinese Simplified)
- LUCI_LANG.zh_Hant=繁體中文 (Chinese Traditional)
+ LUCI_LANG.zh_Hant=繁體中文 (Traditional Chinese)
 +LUCI_LANG.zh-cn=$(LUCI_LANG.zh_Hans)
 +LUCI_LANG.zh-tw=$(LUCI_LANG.zh_Hant)
  

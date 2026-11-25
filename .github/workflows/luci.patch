@@ -4,8 +4,9 @@ Date: Wed, 11 Dec 2024 11:20:45 +0800
 Subject: [PATCH] luci.mk: postinst compat openwrt 23
 
 ---
- luci.mk | 8 +++++---
- 1 file changed, 5 insertions(+), 3 deletions(-)
+ luci.mk                               | 10 ++++++----
+ modules/luci-base/src/contrib/lemon.c | 12 ++++++------
+ 2 files changed, 12 insertions(+), 10 deletions(-)
 
 diff --git a/luci.mk b/luci.mk
 index aca52e08cd..b28284c892 100644
@@ -45,7 +46,8 @@ index aca52e08cd..b28284c892 100644
 diff --git a/modules/luci-base/src/contrib/lemon.c b/modules/luci-base/src/contrib/lemon.c
 --- a/modules/luci-base/src/contrib/lemon.c
 +++ b/modules/luci-base/src/contrib/lemon.c
-@@ -163,6 +163,6 @@
+@@ -162,9 +162,9 @@
+ /********** From the file "build.h" ************************************/
 -void FindRulePrecedences();
 -void FindFirstSets();
 -void FindStates();
@@ -58,5 +60,7 @@ diff --git a/modules/luci-base/src/contrib/lemon.c b/modules/luci-base/src/contr
 +void FindLinks(struct lemon *);
 +void FindFollowSets(struct lemon *);
 +void FindActions(struct lemon *);
+
+ /********* From the file "configlist.h" *********************************/
 -- 
 2.46.0
